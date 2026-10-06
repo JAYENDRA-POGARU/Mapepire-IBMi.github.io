@@ -201,10 +201,11 @@ Use `job.query()` when you need to page through large result sets or control cur
 
 ```ts
 const query = job.query<{ NAME: string }>('SELECT * FROM SAMPLE.SYSCOLUMNS');
-const result = await query.execute(100); // rows to fetch per call; defaults to 100 if omitted
+let result = await query.execute(); // fetches 100 rows by default
+console.table(result.data);
 while (!result.is_done) {
-  const more = await query.fetchMore(100);
-  console.table(more.data);
+  result = await query.fetchMore(100);
+  console.table(result.data);
 }
 await query.close();
 ```
