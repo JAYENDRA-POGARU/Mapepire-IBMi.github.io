@@ -346,6 +346,22 @@ const query = pool.query('SELECT * FROM SAMPLE.SYSCOLUMNS');
 const result = await query.execute(50);
 ```
 
+### Getting a job handle directly
+
+Use `waitForJob()` when you need a reference to a job rather than executing through the pool. It always returns a connected job — creating a new one if needed.
+
+```ts
+// Returns a ready job; creates one if pool has space
+const job = await pool.waitForJob();
+
+// Forces a new job even if maxSize is reached (for burst load)
+const job = await pool.waitForJob(true);
+```
+
+:::caution
+`getReadyJob()` is a private internal method. Calling it from JavaScript returns `undefined` silently when all jobs are busy. Use `waitForJob()` instead.
+:::
+
 ### Closing the pool
 
 ```ts
