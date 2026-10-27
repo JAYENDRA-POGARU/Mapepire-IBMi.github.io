@@ -79,7 +79,7 @@ await job.connect(creds);
 No daemon required. `mapepire-js` connects via SSH and launches the server JAR in single-session mode. A private-install step uploads the bundled JAR automatically when needed.
 
 :::note[Install an SSH library first]
-SSH Single requires either `ssh2` or `node-ssh` — install whichever you prefer before using this transport:
+SSH Single requires either [ssh2](https://www.npmjs.com/package/ssh2) or [node-ssh](https://www.npmjs.com/package/node-ssh) — install whichever you prefer before using this transport:
 
 ```sh
 npm install ssh2
@@ -88,9 +88,11 @@ npm install node-ssh
 ```
 :::
 
-**Connection technique** — By default SSH Single uses the native JDBC driver (`cli`). If you encounter invalid data for CCSID 65535 columns, switch to the jt400 TCP driver:
+**Connection technique** — By default SSH Single uses the native JDBC driver (`cli`). If you encounter invalid data for CCSID 65535 columns, switch to the jt400 TCP driver. Swap `createSSH2Connection` for `createNodeSSHConnection` if using node-ssh.
 
 ```ts
+import { SQLJob, createSSH2Connection } from '@ibm/mapepire-js';
+
 const job = SQLJob.withConfig({
   transport: 'ssh-single',
   sshSingleTechnique: 'tcp', // 'cli' (default) | 'tcp'
@@ -103,23 +105,29 @@ const job = SQLJob.withConfig({
 ```ts
 import { SQLJob } from '@ibm/mapepire-js';
 
-// Using ssh2
 const job = await SQLJob.ssh2({ host: 'ibmi.example.com', username: 'USER', password: 'PASS' });
 await job.connect();
 const result = await job.execute('SELECT * FROM QIWS.QCUSTCDT');
 await job.close(); // SSH client torn down automatically
-
-// Using node-ssh
-const job2 = await SQLJob.nodeSSH({ host: 'ibmi.example.com', username: 'USER', password: 'PASS' });
-await job2.connect();
-const result2 = await job2.execute('SELECT * FROM QIWS.QCUSTCDT');
-await job2.close(); // SSH instance disposed automatically
 ```
+
+<details>
+<summary>Using node-ssh instead</summary>
+
+```ts
+import { SQLJob } from '@ibm/mapepire-js';
+
+const job = await SQLJob.nodeSSH({ host: 'ibmi.example.com', username: 'USER', password: 'PASS' });
+await job.connect();
+const result = await job.execute('SELECT * FROM QIWS.QCUSTCDT');
+await job.close(); // SSH instance disposed automatically
+```
+
+</details>
 
 **Bring your own SSH client** (reuse an existing connection):
 
 ```ts
-// ssh2
 import { SQLJob, connectSSH2, createSSH2Connection } from '@ibm/mapepire-js';
 
 const client = await connectSSH2({ host: 'ibmi.example.com', username: 'USER', password: 'PASS' });
@@ -128,17 +136,23 @@ await job.connect();
 const result = await job.execute('SELECT * FROM QIWS.QCUSTCDT');
 await job.close();
 client.end(); // caller manages SSH client lifetime
+```
 
-// node-ssh
+<details>
+<summary>Using node-ssh instead</summary>
+
+```ts
 import { SQLJob, connectNodeSSH, createNodeSSHConnection } from '@ibm/mapepire-js';
 
 const ssh = await connectNodeSSH({ host: 'ibmi.example.com', username: 'USER', password: 'PASS' });
-const job2 = SQLJob.withConfig({ transport: 'ssh-single', sshSingle: createNodeSSHConnection(ssh) });
-await job2.connect();
-const result2 = await job2.execute('SELECT * FROM QIWS.QCUSTCDT');
-await job2.close();
+const job = SQLJob.withConfig({ transport: 'ssh-single', sshSingle: createNodeSSHConnection(ssh) });
+await job.connect();
+const result = await job.execute('SELECT * FROM QIWS.QCUSTCDT');
+await job.close();
 ssh.dispose(); // caller manages SSH instance lifetime
 ```
+
+</details>
 
 :::tip[Private Install — how it works]
 When you use `createSSH2Connection` (or `createNodeSSHConnection`), `mapepire-js` automatically manages the server JAR:
@@ -394,14 +408,7 @@ const result = await pool.sql`SELECT * FROM SAMPLE.EMPLOYEE WHERE WORKDEPT = ${d
 
 ### `pool.fetchBlob()` — BLOB from pool
 
-Retrieve BLOB bytes through the pool without needing the underlying `SQLJob`:
-
-```ts
-import { BlobRef } from '@ibm/mapepire-js';
-
-const result = await pool.execute<{ DATA: BlobRef }>('SELECT DATA FROM MYLIB.BLOBFILE WHERE ID = 1');
-const buffer: Buffer = await pool.fetchBlob(result.data[0].DATA);
-```
+Retrieve BLOB bytes through the pool without needing the underlying `SQLJob`. See [BLOB Columns](#blob-columns) for the full example — replace `job.fetchBlob(blobRef)` with `pool.fetchBlob(blobRef)`.
 
 ### Getting a job handle directly
 
