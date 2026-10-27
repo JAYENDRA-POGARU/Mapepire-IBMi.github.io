@@ -11,7 +11,7 @@ Full API docs can be found on the [client SDK project page](https://github.com/M
 
 ## Requirements
 
-* Node.js 18 or later
+* Node.js 18 or later (Node.js 20 LTS or later recommended)
 * A running `mapepire-server` daemon on the target IBM i **or** SSH access to an IBM i (see [transport modes](#transport-modes) below)
 
 ## Installation
@@ -36,7 +36,7 @@ await job.connect({
   host: process.env.DB2_HOST,
   user: process.env.DB2_USER,
   password: process.env.DB2_PASS,
-  rejectUnauthorized: false, // set true and use getCertificate() for self-signed certs
+  // rejectUnauthorized defaults to true — see Secure Connections for self-signed cert setup
 });
 
 const result = await job.execute<{ CURRENT_USER: string }>('values current user');
@@ -87,6 +87,16 @@ npm install ssh2
 npm install node-ssh
 ```
 :::
+
+**Connection technique** — By default SSH Single uses the native JDBC driver (`cli`). If you encounter invalid data for CCSID 65535 columns, switch to the jt400 TCP driver:
+
+```ts
+const job = SQLJob.withConfig({
+  transport: 'ssh-single',
+  sshSingleTechnique: 'tcp', // 'cli' (default) | 'tcp'
+  sshSingle: createSSH2Connection(client),
+});
+```
 
 **Recommended — credential-first (SSH lifecycle managed internally):**
 
@@ -255,24 +265,45 @@ await query.execute();
 await query.close();
 ```
 
-### `sql` Tagged Template
-
-`Pool` exposes a `sql` tagged template literal for safe, inline-parameterized queries without needing to manage placeholder arrays:
-
-```ts
-const dept = 'A00';
-const result = await pool.sql`SELECT * FROM SAMPLE.EMPLOYEE WHERE WORKDEPT = ${dept}`;
-```
-
 ### CL Commands
 
-CL commands can be executed through an `SQLJob`:
+`clcommand()` runs a CL command through the SQL job and returns a `SqlCLCommandResult` directly — no `.execute()` call needed. The `data` array contains [`CLMessage`](https://github.com/Mapepire-IBMi/mapepire-js/blob/main/src/types.ts) objects with structured fields (`id`, `type`, `severity`, `text`, `help`, `time`, …). The promise resolves with `success: false` on failure rather than throwing.
 
 ```ts
-const query = job.clcommand('CRTLIB LIB(MYLIB1) TEXT(\'My library\')');
-const result = await query.execute();
-console.log(result);
+import { SqlCLCommandResult } from '@ibm/mapepire-js';
+
+const result: SqlCLCommandResult = await job.clcommand('CRTLIB LIB(MYLIB1) TEXT(\'My library\')');
+if (result.success) {
+  result.data.forEach(msg => console.log(`[${msg.severity}] ${msg.text}`));
+} else {
+  console.error('Command failed:', result.error);
+}
 ```
+
+:::note[Breaking change from v1.0.x]
+Prior to v1.1.0, `clcommand()` returned a `Query` that required `.execute()`. Replace any `job.clcommand(cmd).execute()` with `await job.clcommand(cmd)`.
+:::
+
+### `rcclcommand()` — Remote Command Job
+
+`rcclcommand()` runs the command in a dedicated remote command job instead of the SQL job, so repeated commands do not cause the SQL job log to grow. Requires **mapepire-server 2.5.0 or later**.
+
+```ts
+import { CLCommandResult } from '@ibm/mapepire-js';
+
+const result: CLCommandResult = await job.rcclcommand('DSPLIB LIB(QGPL)');
+if (result.success) {
+  result.data.forEach(msg => console.log(`[${msg.severity}] ${msg.text}`));
+}
+```
+
+| | `clcommand()` | `rcclcommand()` |
+|---|---|---|
+| Runs in | SQL job | Dedicated remote command job |
+| Result type | `SqlCLCommandResult` | `CLCommandResult` |
+| `sql_rc` / `sql_state` | ✓ included | ✗ omitted |
+| Server requirement | any | mapepire-server ≥ 2.5.0 |
+| Best for | one-off commands | repeated/long-lived workloads |
 
 ### CL Command Documentation
 
@@ -286,14 +317,20 @@ console.log(doc.uim);
 
 ### BLOB Columns
 
-Read BLOB columns by fetching the `BlobRef` first, then calling `fetchBlob`:
+`fetchBlob` is **WebSocket-only**. In SSH Single and Local Single transports, BLOB columns are returned as inline Base64 strings rather than `BlobRef` objects, and calling `fetchBlob` will throw.
 
 ```ts
 import { BlobRef } from '@ibm/mapepire-js';
 
+// WebSocket transport only — use job.fetchBlob() or pool.fetchBlob()
 const result = await job.execute<{ DATA: BlobRef }>('SELECT DATA FROM MYLIB.BLOBFILE WHERE ID = 1');
 const blobRef = result.data[0].DATA;
+
+// Via SQLJob directly:
 const buffer: Buffer = await job.fetchBlob(blobRef);
+
+// Via Pool (no need to obtain the underlying SQLJob):
+const buffer2: Buffer = await pool.fetchBlob(blobRef);
 ```
 
 ### `job.explain()` — Visual Explain
@@ -346,20 +383,40 @@ const query = pool.query('SELECT * FROM SAMPLE.SYSCOLUMNS');
 const result = await query.execute(50);
 ```
 
+### `pool.sql` — tagged template
+
+`Pool` exposes a `sql` tagged template literal for safe, inline-parameterized queries without needing to manage placeholder arrays:
+
+```ts
+const dept = 'A00';
+const result = await pool.sql`SELECT * FROM SAMPLE.EMPLOYEE WHERE WORKDEPT = ${dept}`;
+```
+
+### `pool.fetchBlob()` — BLOB from pool
+
+Retrieve BLOB bytes through the pool without needing the underlying `SQLJob`:
+
+```ts
+import { BlobRef } from '@ibm/mapepire-js';
+
+const result = await pool.execute<{ DATA: BlobRef }>('SELECT DATA FROM MYLIB.BLOBFILE WHERE ID = 1');
+const buffer: Buffer = await pool.fetchBlob(result.data[0].DATA);
+```
+
 ### Getting a job handle directly
 
-Use `waitForJob()` when you need a reference to a job rather than executing through the pool. It always returns a connected job — creating a new one if needed.
+Use `waitForJob()` when you need a reference to a job rather than executing through the pool. It returns a ready job immediately, creates a new one if the pool has space, or falls back to the least-busy job.
 
 ```ts
 // Returns a ready job; creates one if pool has space
-const job = await pool.waitForJob();
+const readyJob = await pool.waitForJob();
 
 // Forces a new job even if maxSize is reached (for burst load)
-const job = await pool.waitForJob(true);
+const burstJob = await pool.waitForJob(true);
 ```
 
 :::caution
-`getReadyJob()` is a private internal method. Calling it from JavaScript returns `undefined` silently when all jobs are busy. Use `waitForJob()` instead.
+`getJob()` is synchronous and best-effort — it can return `undefined` when all pool jobs have ended. Use `waitForJob()` for any concurrent or high-throughput workload.
 :::
 
 ### Closing the pool
